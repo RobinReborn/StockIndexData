@@ -8,18 +8,14 @@
 #
 
 #things to add
-#colors 
-#zoom
-#statistical analysis of differences
 #other types of graph
-#volume selector
-#% change in closing
-#axis and title labels on graph
-
+#identify points
+#research on indices
 library(shiny)
 library(dplyr)
-NASDAQ$MonthOfYear = strftime(NASDAQ$Date, '%m')
-formatData = function(indexTable,indexName){
+library(ggplot2)
+
+formatData = function(indexTable){
   indexTable$Date = as.Date(indexTable$Date,"%Y-%m-%d")
   #something to convert Date from character here
   #we add the day of the week as a number to make sorting easier
@@ -30,34 +26,29 @@ formatData = function(indexTable,indexName){
   #we arrange them starting at the begining to make our analysis more intuitive
   indexTable = arrange(indexTable,Date)
   #a basic sum, not incredibly useful
-  #NASDAQ %>% group_by(DayOfWeek) %>% summarize(avgClose =mean(Close)) %>% arrange(DayOfWeek)
   #we get the change from the previous day
   indexTable$CloseChange = c(0,diff(indexTable$Close))
-  #we add the name of the index so we can specify it when we join
-  colnames(indexTable)[7] = paste(colnames(indexTable)[7],indexName)
-  #colnames(indexTable)[10] = paste(colnames(indexTable)[10],indexName)
+  indexTable$PercentCloseChange = 100* (indexTable$CloseChange/lag(indexTable$Close-1))
+  #remove the first row to get rid of the NA value
+  indexTable = indexTable[-1,]
   return (indexTable)
 }
 NASDAQ = read.csv("./NASDAQ.csv")
 SandP = read.csv("./SandP.csv")
 DowJones = read.csv("./dow_jones.csv")
 
-NASDAQ = formatData(NASDAQ,"NASDAQ")
-SandP = formatData(SandP,"SandP")
-DowJones = formatData(DowJones,"DowJones")
+NASDAQ = formatData(NASDAQ)
+SandP = formatData(SandP)
+DowJones = formatData(DowJones)
 
-#FirstJoin = inner_join(NASDAQ,SandP, by = "Date")
-#AllData = inner_join(FirstJoin,DowJones, by="Date")
-#NASDAQ %>% group_by(DayOfWeek) %>% summarize(mean(CloseChange)) %>% arrange(DayOfWeek)
+#write.csv(NASDAQ,"./NASDAQ.csv")
+#write.csv(SandP,"./SandP.csv")
+#write.csv(DowJones,"./DowJones.csv")
 
-
-# Define UI for application that draws a histogram
 ui <- fluidPage(
    
    # Application title
    titlePanel("Patterns in Stock Indicies"),
-   
-   # Sidebar with a slider input for number of bins 
    sidebarLayout(
      sidebarPanel = sidebarPanel(
        selectInput(inputId = "Index", 
@@ -65,44 +56,91 @@ ui <- fluidPage(
                       choices = c("NASDAQ","S&P","Dow Jones")),
        selectInput(inputId = "TimePeriod", 
                       label = "Time Period",
-                      choices= c("DayOfWeek","Monthly","Yearly")),
+                      choices= c("Daily","Monthly","Yearly")),
        selectInput(inputId = "Observation",
                    label = "Observation",
-                   choices = c("CloseChange","High","Low","Volume"))
+                   choices = c("CloseChange","High","Volume","PercentCloseChange")),
+       dateInput(inputId = "startDate",
+                 label = "Start Date",
+                 value = "1987-04-13",
+                 min = "1987-04-13",
+                 max = "2017-04-13"),
+       dateInput(inputId = "endDate",
+                 label = "End Date",
+                 value = "2017-04-13",
+                 min = "1987-04-13",
+                 max = "2017-04-13")
+       
      ),
      mainPanel = mainPanel(plotOutput("Values"),
-                           textOutput("text1")
+                           tableOutput("StatsTable"),
+                           plotOutput("Scatter"),
+                           textOutput("text")
+     ),
+
      )
 )
-)
 
-# Define server logic required to draw a histogram
+
+# Define server logic
 server <- function(input, output, session) {
   datasetInput <- reactive({
-    switch(input$Index,
-           "NASDAQ" = NASDAQ,
-           "S&P" = SandP,
-           "Dow Jones" = DowJones)
+
+    dataset = switch(input$Index,
+              "NASDAQ" = NASDAQ,
+              "S&P" = SandP,
+              "Dow Jones" = DowJones)
+    filter(dataset, input$startDate < dataset[,"Date"] & dataset[,"Date"] < input$endDate)
+    
   })
   timeInput = reactive({
     switch(input$TimePeriod,
-           "DayOfWeek" = "DayOfWeek",
+           "Daily" = "DayOfWeek",
            "Monthly" = "MonthOfYear",
            "Yearly" = "Year")
   })
-  ggplot(data = NASDAQ, aes_string(x="Year",y="CloseChange")) + geom_boxplot()
-  head(NASDAQ$MonthOfYear)
-  head(NASDAQ$Year)
-  #input$Index, {choices = c("NASDAQ","S&P","Dow Jones")}
+  ScatterParameters = reactive({
+    #we set the Observation to the appropriate column 
+    #because sending a string or variable to dplyr is difficult
+  summarize(group_by(datasetInput(), #Year),# datasetInput()[[timeInput]]),
+                       switch(input$TimePeriod,
+                              "Daily" = DayOfWeek,
+                              "Monthly" = MonthOfYear,
+                              "Yearly" = Year)), 
+            avg=mean(
+                                switch(input$Observation,
+                                       "CloseChange" = CloseChange,
+                                        "High" = High,
+                                      "Volume" = Volume,
+                                      "PercentCloseChange" = PercentCloseChange)))
+  })
+
    output$Values <- renderPlot({
-     #dataGraph %>%
-       #filter()
-     ggplot(data = datasetInput(), aes_string(x=timeInput(),y="CloseChange")) + geom_boxplot()
+
+          
+     ggplot(data = datasetInput(), 
+            aes_string(x=timeInput(),y=input$Observation,color=timeInput())) +
+       theme(axis.title.x = element_text(size=24),
+             axis.title.y = element_text(size=24)) +
+       geom_boxplot() #+
+      
+       #geom_tufteboxplot()
    })
-   output$text1 = renderText({
-     #paste("test")
-     timeInput()
+   output$StatsTable = renderTable({
+     as.data.frame(summary(aov(datasetInput()[,input$Observation] ~ datasetInput()[,timeInput()]))[[1]])
+
    })
+   output$Scatter = renderPlot({
+     #time = datasetInput()[c(timeInput(),input$Observation)]
+     print(head(ScatterParameters()))
+     ggplot(data = ScatterParameters(), 
+            aes_string(x="Year",y="avg",color="Year")) +
+       geom_point()
+   })
+   output$text = renderText({
+     paste(cat(input$Observation,input$TimePeriod))
+   })
+   #summarise(group_by(NASDAQ, NASDAQ[,"Year"]),mean=mean(Close))
 }
 
 # Run the application 
